@@ -304,6 +304,7 @@
 
             <div class="flex items-center justify-center mb-6">
                 <input type="text" id="gameIdInput" placeholder="Enter Game ID" class="input-field mr-2">
+                <input type="number" id="gameTimerInput" placeholder="Time (seconds)" class="input-field w-32 mr-2" min="1" value="10">
                 <button id="createGameBtn" class="button">Create Game</button>
                 <button id="joinGameBtn" class="button secondary">Join Game</button>
             </div>
@@ -315,9 +316,12 @@
                 <!-- Cells will be dynamically generated here by JavaScript -->
             </div>
 
-            <!-- New Ready Button -->
-            <button id="readyBtn" class="button text-lg px-8 py-3" style="display: none;">Ready!</button>
-            <button id="newGameBtn" class="button" style="display: none;">Play Again</button>
+            <!-- Game Control Buttons -->
+            <div class="flex justify-center mt-4 space-x-4">
+                <button id="readyBtn" class="button text-lg px-8 py-3" style="display: none;">Ready!</button>
+                <button id="rematchBtn" class="button secondary text-lg px-8 py-3" style="display: none;">Rematch</button>
+                <button id="newGameBtn" class="button" style="display: none;">Play Again</button>
+            </div>
         </div>
 
         <div class="scoreboard-area">
@@ -374,6 +378,7 @@
 
         const MY_APP_ID = "my-local-tic-tac-toe-app";
         const STALE_ROOM_TIMEOUT_MS = 1 * 60 * 1000; // 1 minute in milliseconds
+        // Removed fixed TOTAL_PLAYER_TIME_MS, will be dynamic from input
 
         let app;
         let db;
@@ -390,17 +395,22 @@
         let playerSymbol = null;
         let opponentSymbol = null;
 
-        // New Ready State Variables
         let playerXReady = false;
         let playerOReady = false;
+        let playerXRematch = false;
+        let playerORematch = false;
 
-        const TURN_TIME_LIMIT = 15;
-        let timer = TURN_TIME_LIMIT;
+        let localPlayerXTimeLeft = 0; // Initialized dynamically
+        let localPlayerOTimeLeft = 0; // Initialized dynamically
+        let localTurnStartTime = Date.now();
         let timerInterval;
 
         let playerXScore = 0;
         let playerOScore = 0;
         let drawScore = 0;
+
+        // New DOM element for timer input
+        const gameTimerInput = document.getElementById("gameTimerInput");
 
         const gameBoard = document.getElementById("gameBoard");
         const gameMessage = document.getElementById("gameMessage");
@@ -414,7 +424,8 @@
         const playerOWins = document.getElementById("playerOWins");
         const draws = document.getElementById("draws");
         const gameList = document.getElementById("gameList");
-        const readyBtn = document.getElementById("readyBtn"); // New Ready button element
+        const readyBtn = document.getElementById("readyBtn");
+        const rematchBtn = document.getElementById("rematchBtn");
 
         const customModal = document.getElementById("customModal");
         const modalTitle = document.getElementById("modalTitle");
@@ -467,23 +478,57 @@
                 } else if (cell === "O") {
                     cellElement.classList.add("o");
                 }
-                // Only allow clicking if the game is active (playing state)
                 if (gameActive && !winner && currentPlayer === playerSymbol) {
                      cellElement.addEventListener("click", () => handleClick(index));
                 } else {
-                    cellElement.style.cursor = "default"; // Change cursor if not clickable
+                    cellElement.style.cursor = "default";
                 }
                 gameBoard.appendChild(cellElement);
             });
         };
 
+        const formatTime = (ms) => {
+            const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        };
+
+        const updateTimerDisplay = (customTotalTimeMs = null) => {
+            let timeToDisplay = 0;
+            if (gameActive && currentUserId && gameId) {
+                const timeElapsedOnTheirTurn = Date.now() - localTurnStartTime;
+                if (currentPlayer === "X") {
+                    timeToDisplay = localPlayerXTimeLeft - timeElapsedOnTheirTurn;
+                } else {
+                    timeToDisplay = localPlayerOTimeLeft - timeElapsedOnTheirTurn;
+                }
+            } else if (customTotalTimeMs !== null) {
+                // Display custom set time before game starts
+                timeToDisplay = customTotalTimeMs;
+            } else {
+                // Default display if no game active and no custom time provided
+                timeToDisplay = parseInt(gameTimerInput.value) * 1000 || 10 * 1000; // Default to 10s if input is empty/invalid
+            }
+
+            timerDisplay.textContent = `Time Left: ${formatTime(timeToDisplay)}`;
+
+            if (timeToDisplay <= 5000 && timeToDisplay > 0) {
+                timerDisplay.style.color = '#ef4444';
+                timerDisplay.style.borderColor = '#ef4444';
+            } else if (timeToDisplay <= 0) {
+                 timerDisplay.style.color = '#ef4444';
+                 timerDisplay.style.borderColor = '#ef4444';
+            }
+            else {
+                timerDisplay.style.color = '#10b981';
+                timerDisplay.style.borderColor = '#10b981';
+            }
+        };
+
         const displayMessage = (msg, color = 'text-gray-700') => {
             gameMessage.textContent = msg;
             gameMessage.className = `status-message ${color}`;
-        };
-
-        const updateTimerDisplay = () => {
-            timerDisplay.textContent = `Time Left: ${timer}s`;
         };
 
         const updateScoreboardUI = () => {
@@ -525,10 +570,23 @@
                 const nextPlayer = playerSymbol === "X" ? "O" : "X";
                 const currentStatus = checkGameStatus(newBoard, playerSymbol);
 
+                const timeSpentOnThisTurn = Date.now() - gameData.turnStartTime;
+
+                let newPlayerXTimeLeft = gameData.playerXTimeLeft;
+                let newPlayerOTimeLeft = gameData.playerOTimeLeft;
+
+                if (playerSymbol === "X") {
+                    newPlayerXTimeLeft = Math.max(0, gameData.playerXTimeLeft - timeSpentOnThisTurn);
+                } else {
+                    newPlayerOTimeLeft = Math.max(0, gameData.playerOTimeLeft - timeSpentOnThisTurn);
+                }
+
                 let updateData = {
                     board: newBoard,
                     currentPlayer: nextPlayer,
-                    lastMoveTime: Date.now(),
+                    turnStartTime: Date.now(),
+                    playerXTimeLeft: newPlayerXTimeLeft,
+                    playerOTimeLeft: newPlayerOTimeLeft,
                     moves: gameData.moves + 1
                 };
 
@@ -538,6 +596,12 @@
                     gameActive = false;
                 } else if (currentStatus === "draw") {
                     updateData.status = "draw";
+                    gameActive = false;
+                } else if (newPlayerXTimeLeft <= 0 && playerSymbol === "X") {
+                    updateData.status = "X_timeout";
+                    gameActive = false;
+                } else if (newPlayerOTimeLeft <= 0 && playerSymbol === "O") {
+                    updateData.status = "O_timeout";
                     gameActive = false;
                 }
 
@@ -576,61 +640,96 @@
             return gameActive && currentPlayer === playerSymbol;
         };
 
-        const startTimer = () => {
+        const startTimer = (initialPlayerXTimeLeft, initialPlayerOTimeLeft, initialTurnStartTime, currentTurnPlayer) => {
             stopTimer();
-            timer = TURN_TIME_LIMIT;
+
+            localPlayerXTimeLeft = initialPlayerXTimeLeft;
+            localPlayerOTimeLeft = initialPlayerOTimeLeft;
+            localTurnStartTime = initialTurnStartTime;
+            currentPlayer = currentTurnPlayer;
+
             updateTimerDisplay();
 
             timerInterval = setInterval(async () => {
-                timer--;
                 updateTimerDisplay();
 
-                if (timer <= 0) {
-                    stopTimer();
-                    if (gameId && gameActive && isMyTurn()) {
-                        const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, gameId);
-                        const gameDoc = await getDoc(gameRef);
-                        const gameData = gameDoc.data();
+                let activePlayerTimeRemaining = 0;
+                if (currentTurnPlayer === "X") {
+                    activePlayerTimeRemaining = localPlayerXTimeLeft - (Date.now() - localTurnStartTime);
+                } else {
+                    activePlayerTimeRemaining = localPlayerOTimeLeft - (Date.now() - localTurnStartTime);
+                }
 
-                        if (gameData && gameData.currentPlayer === playerSymbol) {
-                            const nextPlayer = playerSymbol === "X" ? "O" : "X";
-                            await updateDoc(gameRef, {
-                                currentPlayer: nextPlayer,
-                                lastMoveTime: Date.now(),
-                                status: "playing"
-                            });
-                            displayMessage("Time's up! Your turn ended.", "text-red-600");
+                if (activePlayerTimeRemaining <= 0) {
+                    stopTimer();
+                    if (gameId && gameActive && currentTurnPlayer === playerSymbol) {
+                        const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, gameId);
+                        let timeoutStatus = (currentTurnPlayer === "X") ? "X_timeout" : "O_timeout";
+                        try {
+                            await updateDoc(gameRef, { status: timeoutStatus });
+                        } catch (error) {
+                            console.error("Error setting timeout status:", error);
                         }
                     }
                 }
-            }, 1000);
+            }, 100);
         };
+
 
         const stopTimer = () => {
             clearInterval(timerInterval);
+            timerInterval = null;
         };
 
-        // --- New: Handle Ready Button Click ---
         const handleReadyClick = async () => {
-            if (!gameId || !playerSymbol) {
-                displayModal("Error", "Not in a game or symbol not assigned.");
+            if (!gameId || !playerSymbol || !currentUserId) {
+                displayModal("Error", "Not in a game or symbol not assigned. Please wait for authentication.");
                 return;
             }
 
             const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, gameId);
             let updateField = {};
+            let newReadyState;
+
             if (playerSymbol === "X") {
-                updateField.playerXReady = true;
+                newReadyState = !playerXReady;
+                updateField.playerXReady = newReadyState;
             } else {
-                updateField.playerOReady = true;
+                newReadyState = !playerOReady;
+                updateField.playerOReady = newReadyState;
             }
 
             try {
                 await updateDoc(gameRef, updateField);
-                // The onSnapshot listener will handle the UI update based on the new Firestore state
             } catch (error) {
                 console.error("Error setting player ready status:", error);
                 displayModal("Error", "Failed to set ready status. Please try again.");
+            }
+        };
+
+        const handleRematchClick = async () => {
+            if (!gameId || !playerSymbol || !currentUserId) {
+                displayModal("Error", "Not in a game or symbol not assigned. Please wait for authentication.");
+                return;
+            }
+
+            const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, gameId);
+            let updateField = {};
+
+            if (playerSymbol === "X") {
+                updateField.playerXRematch = true;
+            } else {
+                updateField.playerORematch = true;
+            }
+
+            try {
+                await updateDoc(gameRef, updateField);
+                displayMessage(`Waiting for ${opponentSymbol} to accept rematch...`, "text-blue-600");
+                rematchBtn.style.display = 'none';
+                newGameBtn.style.display = 'none';
+            } catch (error) {
+                console.error("Error requesting rematch:", error);
+                displayModal("Error", "Failed to request rematch. Please try again.");
             }
         };
 
@@ -642,6 +741,17 @@
             }
 
             const newGameId = gameIdInput.value.trim() || crypto.randomUUID().substring(0, 8);
+            const customTimerSeconds = parseInt(gameTimerInput.value);
+
+            // Input validation for timer
+            let gameTotalTimeMs;
+            if (isNaN(customTimerSeconds) || customTimerSeconds <= 0) {
+                displayModal("Invalid Timer Input", "Please enter a positive number for the game timer (in seconds). Defaulting to 10 seconds.");
+                gameTotalTimeMs = 10 * 1000; // Default to 10 seconds
+            } else {
+                gameTotalTimeMs = customTimerSeconds * 1000;
+            }
+
             const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, newGameId);
 
             try {
@@ -656,12 +766,19 @@
                     currentPlayer: "X",
                     playerXId: currentUserId,
                     playerOId: null,
-                    status: "waiting", // Still waiting for opponent
-                    playerXReady: false, // New: X not ready yet
-                    playerOReady: false, // New: O not ready yet
+                    status: "waiting",
+                    playerXReady: false,
+                    playerOReady: false,
+                    playerXRematch: false,
+                    playerORematch: false,
                     lastMoveTime: Date.now(),
                     createdAt: Date.now(),
-                    moves: 0
+                    moves: 0,
+                    // Chess Timer Fields - now using the custom time
+                    playerXTimeLeft: gameTotalTimeMs, // Use custom time
+                    playerOTimeLeft: gameTotalTimeMs, // Use custom time
+                    turnStartTime: Date.now(),
+                    totalGameTime: gameTotalTimeMs // Store the configured total time
                 });
 
                 gameId = newGameId;
@@ -671,8 +788,10 @@
                 displayMessage(`Game '${gameId}' created! Share this ID with a friend. Waiting for opponent...`, "text-green-600");
                 listenToGameChanges(gameId);
                 newGameBtn.style.display = 'none';
-                readyBtn.style.display = 'none'; // Hide ready button initially
+                readyBtn.style.display = 'none';
+                rematchBtn.style.display = 'none';
                 gameActive = false;
+                updateTimerDisplay(gameTotalTimeMs); // Show the set time
             } catch (error) {
                 console.error("Error creating game:", error);
                 displayModal("Error", "Failed to create game. Please ensure your Firebase setup is complete and rules allow writing.");
@@ -722,11 +841,11 @@
                     return;
                 }
 
-                // If joining as player O
                 await updateDoc(gameRef, {
                     playerOId: currentUserId,
-                    status: "ready_check", // New: Transition to ready_check
-                    playerOReady: false // New: O not ready yet
+                    status: "ready_check",
+                    playerOReady: false,
+                    playerORematch: false
                 });
 
                 gameId = idToJoin;
@@ -736,9 +855,10 @@
                 displayMessage(`Joined game '${gameId}' as O! Press Ready to start!`, "text-green-600");
                 listenToGameChanges(gameId);
                 newGameBtn.style.display = 'none';
-                readyBtn.style.display = 'block'; // Show ready button for player O
-                gameActive = false; // Game not active until both ready
-                stopTimer(); // Ensure timer is stopped
+                readyBtn.style.display = 'block';
+                rematchBtn.style.display = 'none';
+                gameActive = false;
+                stopTimer();
             } catch (error) {
                 console.error("Error joining game:", error);
                 displayModal("Error", "Failed to join game. Please ensure your Firebase setup is complete and rules allow writing.");
@@ -751,7 +871,7 @@
             }
 
             const gameRef = doc(db, `artifacts/${MY_APP_ID}/public/data/games`, id);
-            unsubscribeGameListener = onSnapshot(gameRef, async (docSnap) => { // Made async for potential updates
+            unsubscribeGameListener = onSnapshot(gameRef, async (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     board = data.board;
@@ -759,11 +879,17 @@
                     winner = null;
                     gameId = id;
 
-                    // Update local ready states
                     playerXReady = data.playerXReady || false;
                     playerOReady = data.playerOReady || false;
+                    playerXRematch = data.playerXRematch || false;
+                    playerORematch = data.playerORematch || false;
 
-                    if (playerSymbol === null && currentUserId) {
+                    localPlayerXTimeLeft = data.playerXTimeLeft;
+                    localPlayerOTimeLeft = data.playerOTimeLeft;
+                    localTurnStartTime = data.turnStartTime;
+
+                    // Always determine playerSymbol based on currentUserId and gameData
+                    if (currentUserId) {
                         if (data.playerXId === currentUserId) {
                             playerSymbol = "X";
                             opponentSymbol = "O";
@@ -771,80 +897,129 @@
                         } else if (data.playerOId === currentUserId) {
                             playerSymbol = "O";
                             opponentSymbol = "X";
+                            isHost = false;
+                        } else {
+                            playerSymbol = null;
+                            opponentSymbol = null;
                         }
-                        playerIdDisplay.textContent = `Your User ID: ${currentUserId} (You are ${playerSymbol})`;
-                    } else if (playerSymbol && currentUserId) {
-                        playerIdDisplay.textContent = `Your User ID: ${currentUserId} (You are ${playerSymbol})`;
+                        if (playerSymbol) {
+                            playerIdDisplay.textContent = `Your User ID: ${currentUserId} (You are ${playerSymbol})`;
+                        } else {
+                            playerIdDisplay.textContent = `Your User ID: ${currentUserId}`;
+                        }
+                    } else {
+                        playerIdDisplay.textContent = "Not signed in.";
+                        playerSymbol = null;
+                        opponentSymbol = null;
                     }
 
-                    renderBoard(); // Re-render board (cells enabled/disabled based on gameActive)
-                    newGameBtn.style.display = 'none'; // Hide play again by default
 
-                    // --- Handle Game Status Logic with Ready Button ---
+                    renderBoard();
+                    newGameBtn.style.display = 'none';
+                    rematchBtn.style.display = 'none';
+
                     if (data.status === "waiting") {
                         gameActive = false;
                         stopTimer();
-                        readyBtn.style.display = 'none'; // Hide ready button
+                        readyBtn.style.display = 'none';
                         displayMessage(`Game '${gameId}': Waiting for opponent... (Host: ${data.playerXId.substring(0,6)}...)`, "text-blue-600");
+                        // Display the set game time even before game starts
+                        updateTimerDisplay(data.totalGameTime);
                     } else if (data.status === "ready_check") {
-                        gameActive = false; // Game not active yet
-                        stopTimer(); // Ensure timer is stopped
+                        gameActive = false;
+                        stopTimer();
 
                         if (playerXReady && playerOReady) {
-                            // Both players are ready, transition to playing
                             displayMessage("Both players ready! Starting game...", "text-green-600");
-                            readyBtn.style.display = 'none'; // Hide ready button
-                            // Use setTimeout to give message a moment, then update status
+                            readyBtn.style.display = 'none';
                             setTimeout(async () => {
                                 try {
-                                    await updateDoc(gameRef, { status: "playing", lastMoveTime: Date.now() });
+                                    await updateDoc(gameRef, {
+                                        status: "playing",
+                                        turnStartTime: Date.now(),
+                                        playerXTimeLeft: data.totalGameTime, // Reset times to totalGameTime
+                                        playerOTimeLeft: data.totalGameTime
+                                    });
                                 } catch (error) {
                                     console.error("Error transitioning to playing status:", error);
                                 }
-                            }, 1000); // 1-second delay before starting
+                            }, 1000);
                         } else {
-                            // Display ready button and status
-                            if (playerSymbol === "X" && !playerXReady) {
+                            const myCurrentReadyState = (playerSymbol === "X" && playerXReady) || (playerSymbol === "O" && playerOReady);
+
+                            if (myCurrentReadyState) {
                                 readyBtn.style.display = 'block';
-                                displayMessage(`Game '${gameId}': Press Ready. Opponent (${opponentSymbol}) ${playerOReady ? 'IS' : 'is NOT'} ready.`, "text-blue-600");
-                            } else if (playerSymbol === "O" && !playerOReady) {
-                                readyBtn.style.display = 'block';
-                                displayMessage(`Game '${gameId}': Press Ready. Opponent (${opponentSymbol}) ${playerXReady ? 'IS' : 'is NOT'} ready.`, "text-blue-600");
+                                readyBtn.textContent = 'Unready';
+                                displayMessage(`You are Ready! Waiting for opponent.`, "text-blue-600");
                             } else {
-                                readyBtn.style.display = 'none'; // If current player is ready, hide their button
-                                displayMessage(`Game '${gameId}': Waiting for opponent to be ready.`, "text-blue-600");
+                                readyBtn.style.display = 'block';
+                                readyBtn.textContent = 'Ready!';
+                                const oppReadyText = (playerSymbol === "X" ? playerOReady : playerXReady) ? 'IS' : 'is NOT';
+                                displayMessage(`Game '${gameId}': Press Ready. Opponent (${opponentSymbol}) ${oppReadyText} ready.`, "text-blue-600");
                             }
                         }
+                        // Update timer display to show initial configured time during ready_check
+                        updateTimerDisplay(data.totalGameTime);
                     } else if (data.status === "playing") {
-                        gameActive = true; // Game is now active
-                        readyBtn.style.display = 'none'; // Hide ready button
-                        const timeElapsed = (Date.now() - data.lastMoveTime) / 1000;
-                        timer = Math.max(0, TURN_TIME_LIMIT - Math.floor(timeElapsed));
-                        startTimer();
+                        gameActive = true;
+                        readyBtn.style.display = 'none';
+                        startTimer(data.playerXTimeLeft, data.playerOTimeLeft, data.turnStartTime, data.currentPlayer);
                         if (isMyTurn()) {
                             displayMessage(`It's your turn (${playerSymbol})!`, "text-green-700");
                         } else {
                             displayMessage(`Opponent's turn (${opponentSymbol})`, "text-yellow-700");
                         }
-                    } else if (data.status.includes("_wins")) {
+                    } else if (data.status.includes("_wins") || data.status === "draw" || data.status.includes("_timeout")) {
                         gameActive = false;
                         stopTimer();
-                        readyBtn.style.display = 'none'; // Hide ready button
-                        winner = data.status.split("_")[0];
-                        displayMessage(`${winner} wins! Game over.`, winner === playerSymbol ? "text-green-700" : "text-red-700");
-                        if (data.winnerId === currentUserId) {
-                             updateScoreboard(currentUserId, 1, 0, 0);
-                        } else if (data.winnerId && data.winnerId !== currentUserId) {
-                             updateScoreboard(currentUserId, 0, 1, 0);
+                        readyBtn.style.display = 'none';
+
+                        if (data.status.includes("_wins")) {
+                            winner = data.status.split("_")[0];
+                            displayMessage(`${winner} wins! Game over.`, winner === playerSymbol ? "text-green-700" : "text-red-700");
+                            if (data.winnerId === currentUserId) { updateScoreboard(currentUserId, 1, 0, 0); }
+                            else if (data.winnerId && data.winnerId !== currentUserId) { updateScoreboard(currentUserId, 0, 1, 0); }
+                        } else if (data.status.includes("_timeout")) {
+                            const timedOutPlayer = data.status.split("_")[0];
+                            const winnerByTimeout = (timedOutPlayer === "X") ? "O" : "X";
+                            displayMessage(`${timedOutPlayer} ran out of time! ${winnerByTimeout} wins!`, winnerByTimeout === playerSymbol ? "text-green-700" : "text-red-700");
+                            if (winnerByTimeout === playerSymbol) { updateScoreboard(currentUserId, 1, 0, 0); }
+                            else { updateScoreboard(currentUserId, 0, 1, 0); }
+                        } else if (data.status === "draw") {
+                            displayMessage("It's a draw! Game over.", "text-blue-700");
+                            updateScoreboard(currentUserId, 0, 0, 1);
+                        }
+
+                        if (playerSymbol) {
+                             rematchBtn.style.display = 'block';
                         }
                         newGameBtn.style.display = 'block';
-                    } else if (data.status === "draw") {
-                        gameActive = false;
-                        stopTimer();
-                        readyBtn.style.display = 'none'; // Hide ready button
-                        displayMessage("It's a draw! Game over.", "text-blue-700");
-                        updateScoreboard(currentUserId, 0, 0, 1);
-                        newGameBtn.style.display = 'block';
+
+                        if (playerXRematch && playerORematch) {
+                            displayMessage("Both players requested rematch! Resetting game...", "text-green-600");
+                             rematchBtn.style.display = 'none';
+                             newGameBtn.style.display = 'none';
+                            setTimeout(async () => {
+                                try {
+                                    await updateDoc(gameRef, {
+                                        board: ["", "", "", "", "", "", "", "", ""],
+                                        currentPlayer: "X",
+                                        status: "ready_check",
+                                        playerXReady: false,
+                                        playerOReady: false,
+                                        playerXRematch: false,
+                                        playerORematch: false,
+                                        // Reset times to the game's original configured total time
+                                        playerXTimeLeft: data.totalGameTime,
+                                        playerOTimeLeft: data.totalGameTime,
+                                        turnStartTime: Date.now(),
+                                        moves: 0
+                                    });
+                                } catch (error) {
+                                    console.error("Error resetting game for rematch:", error);
+                                }
+                            }, 1000);
+                        }
                     }
                 } else {
                     displayModal("Game Ended", "The game you were in has ended or was deleted by the host.");
@@ -876,20 +1051,26 @@
             currentPlayer = "X";
             gameActive = false;
             winner = null;
-            timer = TURN_TIME_LIMIT;
+            localPlayerXTimeLeft = 0; // Will be set by totalGameTime from Firestore on new game/rematch
+            localPlayerOTimeLeft = 0; // Will be set by totalGameTime from Firestore on new game/rematch
+            localTurnStartTime = Date.now();
             stopTimer();
-            playerXReady = false; // Reset ready states
-            playerOReady = false; // Reset ready states
+            playerXReady = false;
+            playerOReady = false;
+            playerXRematch = false;
+            playerORematch = false;
             renderBoard();
             newGameBtn.style.display = 'none';
-            readyBtn.style.display = 'none'; // Hide ready button on reset
+            readyBtn.style.display = 'none';
+            rematchBtn.style.display = 'none';
 
             if (gameId) {
                 if (isHost) {
                     try {
                         await deleteDoc(doc(db, `artifacts/${MY_APP_ID}/public/data/games`, gameId));
                         displayMessage(`Game '${gameId}' has been reset/deleted by host. Create or join a new game.`, "text-blue-600");
-                    } catch (error) {
+                    }
+                     catch (error) {
                         console.error("Error deleting game document:", error);
                         displayModal("Error", "Failed to reset game on server. Please try refreshing.");
                     }
@@ -907,6 +1088,8 @@
                 unsubscribeGameListener();
                 unsubscribeGameListener = null;
             }
+            // Reset timer display to default or input value
+            updateTimerDisplay();
         };
 
 
@@ -999,18 +1182,25 @@
                             statusText = `Waiting for player (X: ${data.playerXId.substring(0,6)}...)`;
                             joinBtnHtml = `<button class="button secondary text-sm px-3 py-1 ml-2" onclick="document.getElementById('gameIdInput').value='${gameRoomId}'; document.getElementById('joinGameBtn').click();">Join</button>`;
                             hasActiveGames = true;
-                        } else if (data.status === "ready_check") { // New status for ready check
+                        } else if (data.status === "ready_check") {
                             let readyStatus = '';
                             if (data.playerXReady) readyStatus += 'X Ready ';
                             if (data.playerOReady) readyStatus += 'O Ready';
+                            let rematchStatus = '';
+                            if (data.playerXRematch) rematchStatus += 'X Rematch ';
+                            if (data.playerORematch) rematchStatus += 'O Rematch';
+
                             statusText = `Players Ready: ${readyStatus.trim() || 'None'}`;
-                            joinBtnHtml = `<span class="text-xs text-gray-500">In Prep</span>`; // Cannot join a game in ready_check
+                            if (rematchStatus) {
+                                statusText += ` | Rematch: ${rematchStatus.trim()}`;
+                            }
+                            joinBtnHtml = `<span class="text-xs text-gray-500">In Prep</span>`;
                             hasActiveGames = true;
                         } else if (data.status === "playing") {
                             statusText = `In Progress (X: ${data.playerXId.substring(0,6)}... O: ${data.playerOId ? data.playerOId.substring(0,6) + '...' : '?'})`;
                             joinBtnHtml = `<span class="text-xs text-gray-500">Full</span>`;
                             hasActiveGames = true;
-                        } else if (data.status.includes("_wins") || data.status === "draw") {
+                        } else if (data.status.includes("_wins") || data.status === "draw" || data.status.includes("_timeout")) {
                             statusText = `Game Over (${data.status.replace('_', ' ').replace('s', '')})`;
                             joinBtnHtml = `<span class="text-xs text-gray-500">Ended</span>`;
                             hasActiveGames = true;
@@ -1044,7 +1234,8 @@
         createGameBtn.addEventListener("click", createGame);
         joinGameBtn.addEventListener("click", joinGame);
         modalCloseBtn.addEventListener("click", hideModal);
-        readyBtn.addEventListener("click", handleReadyClick); // New event listener for the ready button
+        readyBtn.addEventListener("click", handleReadyClick);
+        rematchBtn.addEventListener("click", handleRematchClick);
 
 
         // Initial setup
